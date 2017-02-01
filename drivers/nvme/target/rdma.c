@@ -23,6 +23,7 @@
 #include <linux/string.h>
 #include <linux/wait.h>
 #include <linux/inet.h>
+#include <linux/pci.h>
 #include <asm/unaligned.h>
 
 #include <rdma/ib_verbs.h>
@@ -68,6 +69,7 @@ struct nvmet_rdma_rsp {
 	u8			n_rdma;
 	u32			flags;
 	u32			invalidate_rkey;
+	struct pci_dev		*p2p_dev;
 
 	struct list_head	wait_list;
 	struct list_head	free_list;
@@ -236,6 +238,65 @@ out_free_pages:
 	kfree(sg);
 out:
 	return NVME_SC_INTERNAL;
+}
+
+
+static int nvmet_rdma_alloc_sgl_p2p(struct pci_dev *p2p_dev,
+		struct scatterlist **sgl, unsigned int *nents, u32 length)
+{
+	struct scatterlist *sg;
+	void *addr;
+	unsigned int nent;
+	int i = 0;
+
+	nent = DIV_ROUND_UP(length, PAGE_SIZE);
+	sg = kmalloc_array(nent, sizeof(struct scatterlist), GFP_KERNEL);
+	if (!sg)
+		goto out;
+
+	sg_init_table(sg, nent);
+
+	while (length) {
+		u32 page_len = min_t(u32, length, PAGE_SIZE);
+
+		/*
+		 * XXX: No good reason to just allocate page size chunks with
+		 * genalloc..
+		 */
+		addr = pci_alloc_p2pmem(p2p_dev, page_len);
+		if (!addr)
+			goto out_free_elements;
+
+		sg_set_buf(&sg[i], addr, page_len);
+		length -= page_len;
+		i++;
+	}
+	*sgl = sg;
+	*nents = nent;
+	return 0;
+
+out_free_elements:
+	while (i > 0) {
+		i--;
+		pci_free_p2pmem(p2p_dev, sg_virt(sg), sg->length);
+	}
+	kfree(sg);
+out:
+	return NVME_SC_INTERNAL;
+}
+
+static void nvmet_rdma_free_sgl_p2p(struct pci_dev *p2p_dev,
+		struct scatterlist *sgl, unsigned int nents)
+{
+	struct scatterlist *sg;
+	int count;
+
+	if (!sgl || !nents)
+		return;
+
+	for_each_sg(sgl, sg, nents, count)
+		pci_free_p2pmem(p2p_dev, sg_virt(sg), sg->length);
+	kfree(sgl);
 }
 
 static int nvmet_rdma_alloc_cmd(struct nvmet_rdma_device *ndev,
@@ -483,8 +544,14 @@ static void nvmet_rdma_release_rsp(struct nvmet_rdma_rsp *rsp)
 				rsp->req.sg_cnt, nvmet_data_dir(&rsp->req));
 	}
 
-	if (rsp->req.sg != &rsp->cmd->inline_sg)
-		nvmet_rdma_free_sgl(rsp->req.sg, rsp->req.sg_cnt);
+	if (rsp->req.sg != &rsp->cmd->inline_sg) {
+		if (rsp->p2p_dev) {
+			nvmet_rdma_free_sgl_p2p(rsp->p2p_dev,
+					rsp->req.sg, rsp->req.sg_cnt);
+		} else {
+			nvmet_rdma_free_sgl(rsp->req.sg, rsp->req.sg_cnt);
+		}
+	}
 
 	if (unlikely(!list_empty_careful(&queue->rsp_wr_wait_list)))
 		nvmet_rdma_process_wr_wait_list(queue);
@@ -619,6 +686,7 @@ static u16 nvmet_rdma_map_sgl_keyed(struct nvmet_rdma_rsp *rsp,
 	u64 addr = le64_to_cpu(sgl->addr);
 	u32 len = get_unaligned_le24(sgl->length);
 	u32 key = get_unaligned_le32(sgl->key);
+	struct pci_dev *p2p_dev = rsp->queue->nvme_sq.ctrl->p2p_dev;
 	int ret;
 	u16 status;
 
@@ -626,8 +694,19 @@ static u16 nvmet_rdma_map_sgl_keyed(struct nvmet_rdma_rsp *rsp,
 	if (!len)
 		return 0;
 
-	status = nvmet_rdma_alloc_sgl(&rsp->req.sg, &rsp->req.sg_cnt,
-			len);
+	rsp->p2p_dev = NULL;
+	if (rsp->queue->nvme_sq.qid && p2p_dev) {
+		status = nvmet_rdma_alloc_sgl_p2p(p2p_dev, &rsp->req.sg,
+				&rsp->req.sg_cnt, len);
+		if (status)
+			rsp->p2p_dev = p2p_dev;
+	}
+
+	if (!rsp->p2p_dev) {
+		status = nvmet_rdma_alloc_sgl(&rsp->req.sg, &rsp->req.sg_cnt,
+				len);
+	}
+
 	if (status)
 		return status;
 

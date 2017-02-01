@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/rculist.h>
+#include <linux/pci.h>
 
 #include "nvmet.h"
 
@@ -735,6 +736,35 @@ bool nvmet_host_allowed(struct nvmet_req *req, struct nvmet_subsys *subsys,
 		return __nvmet_host_allowed(subsys, hostnqn);
 }
 
+/*
+ * If allow_p2pmem is set, we will try to use P2P memory for the SGL lists for
+ * Ι/O commands. This requires the PCI p2p device to be compatible with the
+ * backing device for every namespace on this controller.
+ *
+ * XXX(hch): needs to be rechecked when adding a namespace.
+ */
+static void nvmet_setup_p2pmem(struct nvmet_ctrl *ctrl, struct nvmet_port *port)
+{
+	struct device **devices;
+	struct nvmet_ns *ns;
+	int i = 0;
+
+	if (!port->allow_p2pmem)
+		return;
+
+	devices = kcalloc(ctrl->subsys->max_nsid, sizeof(*devices), GFP_KERNEL);
+	if (!devices)
+		return;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(ns, &ctrl->subsys->namespaces, dev_link)
+		devices[i++] = disk_to_dev(ns->bdev->bd_disk);
+	rcu_read_unlock();
+
+	ctrl->p2p_dev = pci_p2pmem_find(devices);
+	kfree(devices);
+}
+
 u16 nvmet_alloc_ctrl(const char *subsysnqn, const char *hostnqn,
 		struct nvmet_req *req, u32 kato, struct nvmet_ctrl **ctrlp)
 {
@@ -829,6 +859,7 @@ u16 nvmet_alloc_ctrl(const char *subsysnqn, const char *hostnqn,
 		ctrl->kato = DIV_ROUND_UP(kato, 1000);
 	}
 	nvmet_start_keep_alive_timer(ctrl);
+	nvmet_setup_p2pmem(ctrl, req->port);
 
 	mutex_lock(&subsys->lock);
 	list_add_tail(&ctrl->subsys_entry, &subsys->ctrls);
@@ -863,6 +894,7 @@ static void nvmet_ctrl_free(struct kref *ref)
 	flush_work(&ctrl->async_event_work);
 	cancel_work_sync(&ctrl->fatal_err_work);
 
+	pci_dev_put(ctrl->p2p_dev);
 	ida_simple_remove(&cntlid_ida, ctrl->cntlid);
 	nvmet_subsys_put(subsys);
 
