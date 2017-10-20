@@ -1,0 +1,225 @@
+/*
+ * Peer 2 Peer Memory support.
+ *
+ * Copyright (c) 2016, Microsemi Corporation
+ * Copyright (c) 2017, Christoph Hellwig.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ */
+
+#include <linux/pci.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/genalloc.h>
+#include <linux/memremap.h>
+
+static void pci_p2pmem_percpu_release(struct percpu_ref *ref)
+{
+	struct pci_dev *pdev =
+		container_of(ref, struct pci_dev, p2p_devmap_ref);
+
+	complete_all(&pdev->p2p_devmap_ref_done);
+}
+
+static void pci_p2pmem_percpu_exit(void *data)
+{
+	struct percpu_ref *ref = data;
+	struct pci_dev *pdev =
+		container_of(ref, struct pci_dev, p2p_devmap_ref);
+
+	wait_for_completion(&pdev->p2p_devmap_ref_done);
+	percpu_ref_exit(ref);
+}
+
+static void pci_p2pmem_percpu_kill(void *data)
+{
+	struct percpu_ref *ref = data;
+
+	if (percpu_ref_is_dying(ref))
+		return;
+	percpu_ref_kill(ref);
+}
+
+void pci_p2pmem_release(struct pci_dev *pdev)
+{
+	if (pdev->p2p_pool)
+		gen_pool_destroy(pdev->p2p_pool);
+}
+
+int pci_p2pmem_setup(struct pci_dev *pdev)
+{
+	int error = -ENOMEM;
+
+	pdev->p2p_pool = gen_pool_create(PAGE_SHIFT, dev_to_node(&pdev->dev));
+	if (!pdev->p2p_pool)
+		goto out;
+
+	init_completion(&pdev->p2p_devmap_ref_done);
+	error = percpu_ref_init(&pdev->p2p_devmap_ref,
+			pci_p2pmem_percpu_release, 0, GFP_KERNEL);
+	if (error)
+		goto out_pool_destroy;
+
+	error = devm_add_action_or_reset(&pdev->dev, pci_p2pmem_percpu_exit,
+			&pdev->p2p_devmap_ref);
+	if (error)
+		goto out_pool_destroy;
+	return 0;
+
+out_pool_destroy:
+	gen_pool_destroy(pdev->p2p_pool);
+out:
+	return error;
+}
+
+/**
+ * pci_p2pmem_add_resource - add memory for use as p2p memory
+ * @pci: the device to add the memory to
+ * @bar: PCI bar to add
+ * @offset: offset into the PCI bar
+ *
+ * The memory will be given ZONE_DEVICE struct pages so that it may
+ * be used with any dma request.
+ */
+int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset)
+{
+	struct resource res = {
+		.start	= pci_resource_start(pdev, bar) + offset,
+		.end	= pci_resource_end(pdev, bar),
+	};
+	void *addr;
+	int error;
+
+	if (WARN_ON(offset >= pci_resource_len(pdev, bar)))
+		return -EINVAL;
+
+	addr = devm_memremap_pages(&pdev->dev, &res, &pdev->p2p_devmap_ref,
+			NULL);
+	if (IS_ERR(addr))
+		return PTR_ERR(addr);
+
+	error = gen_pool_add_virt(pdev->p2p_pool, (uintptr_t)addr,
+			pci_bus_address(pdev, bar) + offset,
+			resource_size(&res), dev_to_node(&pdev->dev));
+	if (error)
+		return error;
+
+	return devm_add_action_or_reset(&pdev->dev, pci_p2pmem_percpu_kill,
+			&pdev->p2p_devmap_ref);
+}
+EXPORT_SYMBOL_GPL(pci_p2pmem_add_resource);
+
+/* XXX(hch): what about refcounting??? */
+static struct pci_dev *find_parent_pci_dev(struct device *dev)
+{
+	while (dev) {
+		if (dev_is_pci(dev))
+			return to_pci_dev(dev);
+		dev = dev->parent;
+	}
+
+	return NULL;
+}
+
+/*
+ * If a device is behind a switch, we try to find the upstream bridge
+ * port of the switch. This requires two calls to pci_upstream_bridge:
+ * one for the upstream port on the switch, one on the upstream port
+ * for the next level in the hierarchy. Because of this, devices connected
+ * to the root port will be rejected.
+ */
+static struct pci_dev *get_upstream_switch_port(struct pci_dev *pdev)
+{
+	if (pdev)
+		pdev = pci_upstream_bridge(pdev);
+	if (pdev)
+		pdev = pci_upstream_bridge(pdev);
+	return pdev;
+}
+
+static int upstream_bridges_match(struct pci_dev *pdev, struct device **devices)
+{
+	struct pci_dev *p2p_up;
+	struct pci_dev *dma_up;
+	struct device *dev;
+
+	p2p_up = get_upstream_switch_port(pdev);
+	if (!p2p_up) {
+		dev_warn(&pdev->dev, "not behind a pci switch\n");
+		return false;
+	}
+
+	for (dev = *devices; dev; dev++) {
+		dma_up = get_upstream_switch_port(find_parent_pci_dev(dev));
+		if (!dma_up) {
+			dev_dbg(dev, "not a pci device behind a switch\n");
+			return false;
+		}
+
+		if (p2p_up != dma_up) {
+			dev_dbg(&pdev->dev,
+				"%s does not reside on the same upstream bridge\n",
+				dev_name(dev));
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * pci_p2pmem_find - find a p2p mem device compatible with the specified device
+ * @dev: list of device to check (NULL-terminated)
+ *
+ * For now, we only support cases where the devices that will transfer to the
+ * p2pmem device are on the same switch.  This cuts out cases that may work but
+ * is safest for the user.
+ *
+ * Returns a pointer to the PCI device with a reference taken (use pci_dev_put
+ * to return the reference) or NULL if no compatible device is found.
+ */
+struct pci_dev *pci_p2pmem_find(struct device **devices)
+{
+	struct pci_dev *pdev = NULL;
+
+	while ((pdev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, pdev))) {
+		if (upstream_bridges_match(pdev, devices))
+			return pdev;
+	}
+
+	pci_dev_put(pdev);
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(pci_p2pmem_find);
+
+/**
+ * pci_alloc_p2p_mem - allocate p2p memory
+ * @pdev:	the device to allocate memory from
+ * @size:	number of bytes to allocate
+ *
+ * Returns the allocated memory or NULL on error.
+ */
+void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size)
+{
+	return (void *)(uintptr_t)gen_pool_alloc(pdev->p2p_pool, size);
+}
+EXPORT_SYMBOL_GPL(pci_alloc_p2pmem);
+
+/**
+ * pci_free_p2pmem - allocate p2p memory
+ * @pdev:	the device the memory was allocated from
+ * @addr:	address of the memory that was allocated
+ * @size:	number of bytes that was allocated
+ */
+void pci_free_p2pmem(struct pci_dev *pdev, void *addr, size_t size)
+{
+	gen_pool_free(pdev->p2p_pool, (uintptr_t)addr, size);
+}
+EXPORT_SYMBOL_GPL(pci_free_p2pmem);

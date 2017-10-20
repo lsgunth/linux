@@ -1871,6 +1871,7 @@ static void pci_release_dev(struct device *dev)
 	struct pci_dev *pci_dev;
 
 	pci_dev = to_pci_dev(dev);
+	pci_p2pmem_release(pci_dev);
 	pci_release_capabilities(pci_dev);
 	pci_release_of_node(pci_dev);
 	pcibios_release_device(pci_dev);
@@ -2116,6 +2117,9 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 
 	/* Setup MSI irq domain */
 	pci_set_msi_domain(dev);
+
+	/* Setup P2P memory */
+	pci_p2pmem_setup(dev);
 
 	/* Notifier could use PCI capabilities */
 	dev->match_driver = false;

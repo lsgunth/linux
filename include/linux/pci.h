@@ -32,6 +32,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/resource_ext.h>
+#include <linux/percpu-refcount.h>
 #include <uapi/linux/pci.h>
 
 #include <linux/pci_ids.h>
@@ -436,6 +437,11 @@ struct pci_dev {
 #endif
 #ifdef CONFIG_PCI_PASID
 	u16		pasid_features;
+#endif
+#ifdef CONFIG_PCI_P2P
+	struct percpu_ref p2p_devmap_ref;
+	struct completion p2p_devmap_ref_done;
+	struct gen_pool *p2p_pool;
 #endif
 	phys_addr_t rom; /* Physical address of ROM if it's not from the BAR */
 	size_t romlen; /* Length of ROM if it's not from the BAR */
@@ -1994,6 +2000,31 @@ static inline int pci_sriov_get_totalvfs(struct pci_dev *dev)
 static inline resource_size_t pci_iov_resource_size(struct pci_dev *dev, int resno)
 { return 0; }
 #endif
+
+#ifdef CONFIG_PCI_P2P
+int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset);
+struct pci_dev *pci_p2pmem_find(struct device **devices);
+void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size);
+void pci_free_p2pmem(struct pci_dev *pdev, void *addr, size_t size);
+#else
+static inline int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar,
+	u64 offset)
+{
+	return 0;
+}
+static inline struct pci_dev *pci_p2pmem_find(struct device **devices)
+{
+	return NULL;
+}
+static inline void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size)
+{
+	return NULL;
+}
+static inline void pci_free_p2pmem(struct pci_dev *pdev, void *addr,
+		size_t size)
+{
+}
+#endif /* CONFIG_PCI_P2P */
 
 #if defined(CONFIG_HOTPLUG_PCI) || defined(CONFIG_HOTPLUG_PCI_MODULE)
 void pci_hp_create_module_link(struct pci_slot *pci_slot);

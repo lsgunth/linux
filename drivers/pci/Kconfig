@@ -123,6 +123,19 @@ config PCI_PASID
 
 	  If unsure, say N.
 
+config PCI_P2P
+	bool "PCI Peer to Peer transfer support"
+	depends on ZONE_DEVICE
+	select GENERIC_ALLOCATOR
+	help
+	  Enableѕ drivers to do PCI peer to peer transactions to and from
+	  bars that are exposed to other devices in the same domain.
+
+	  Note that most PCIe root complexes do not support P2P
+	  transactions, so you will usually need a PCIe switch.
+
+	  If unsure, say N.
+
 config PCI_LABEL
 	def_bool y if (DMI || ACPI)
 	select NLS
