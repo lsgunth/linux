@@ -324,13 +324,8 @@ static inline int pci_iov_bus_range(struct pci_bus *bus)
 #endif /* CONFIG_PCI_IOV */
 
 #ifdef CONFIG_PCI_P2P
-int pci_p2pmem_setup(struct pci_dev *pdev);
 void pci_p2pmem_release(struct pci_dev *pdev);
 #else
-static inline int pci_p2pmem_setup(struct pci_dev *pdev)
-{
-	return 0;
-}
 static inline void pci_p2pmem_release(struct pci_dev *pdev)
 {
 }

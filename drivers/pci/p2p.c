@@ -53,7 +53,7 @@ void pci_p2pmem_release(struct pci_dev *pdev)
 		gen_pool_destroy(pdev->p2p_pool);
 }
 
-int pci_p2pmem_setup(struct pci_dev *pdev)
+static int pci_p2pmem_setup(struct pci_dev *pdev)
 {
 	int error = -ENOMEM;
 
