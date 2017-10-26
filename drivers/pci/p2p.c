@@ -201,11 +201,13 @@ struct pci_dev *pci_p2pmem_find(struct device **devices)
 	struct pci_dev *pdev = NULL;
 
 	while ((pdev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, pdev))) {
+		if (!pdev->p2p_pool)
+			continue;
+
 		if (upstream_bridges_match(pdev, devices))
 			return pdev;
 	}
 
-	pci_dev_put(pdev);
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(pci_p2pmem_find);
