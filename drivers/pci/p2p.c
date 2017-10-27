@@ -90,24 +90,35 @@ out:
  */
 int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset)
 {
-	struct resource res = {
-		.start	= pci_resource_start(pdev, bar) + offset,
-		.end	= pci_resource_end(pdev, bar),
-	};
+	struct dev_pagemap *pgmap;
 	void *addr;
 	int error;
 
 	if (WARN_ON(offset >= pci_resource_len(pdev, bar)))
 		return -EINVAL;
 
-	addr = devm_memremap_pages(&pdev->dev, &res, &pdev->p2p_devmap_ref,
-			NULL);
+	if (!pdev->p2p_pool) {
+		error = pci_p2pmem_setup(pdev);
+		if (error)
+			return error;
+	}
+
+	pgmap = devm_kzalloc(&pdev->dev, sizeof(*pgmap), GFP_KERNEL);
+	if (!pgmap)
+		return -ENOMEM;
+
+	pgmap->res.start = pci_resource_start(pdev, bar) + offset;
+	pgmap->res.end = pci_resource_end(pdev, bar);
+	pgmap->ref = &pdev->p2p_devmap_ref;
+	pgmap->type = MEMORY_DEVICE_PCI_P2P;
+
+	addr = devm_memremap_pages(&pdev->dev, pgmap);
 	if (IS_ERR(addr))
 		return PTR_ERR(addr);
 
 	error = gen_pool_add_virt(pdev->p2p_pool, (uintptr_t)addr,
 			pci_bus_address(pdev, bar) + offset,
-			resource_size(&res), dev_to_node(&pdev->dev));
+			resource_size(&pgmap->res), dev_to_node(&pdev->dev));
 	if (error)
 		return error;
 
