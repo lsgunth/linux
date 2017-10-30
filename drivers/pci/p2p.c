@@ -127,13 +127,19 @@ int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset)
 }
 EXPORT_SYMBOL_GPL(pci_p2pmem_add_resource);
 
-/* XXX(hch): what about refcounting??? */
 static struct pci_dev *find_parent_pci_dev(struct device *dev)
 {
+	struct device *parent;
+
+	dev = get_device(dev);
+
 	while (dev) {
 		if (dev_is_pci(dev))
 			return to_pci_dev(dev);
-		dev = dev->parent;
+
+		parent = get_device(dev->parent);
+		put_device(dev);
+		dev = parent;
 	}
 
 	return NULL;
@@ -168,7 +174,10 @@ static int upstream_bridges_match(struct pci_dev *pdev, struct device **devices)
 	}
 
 	for (dev = *devices; dev; dev++) {
-		dma_up = get_upstream_switch_port(find_parent_pci_dev(dev));
+		parent = find_parent_pci_dev(dev);
+		dma_up = get_upstream_switch_port(parent);
+		pci_dev_put(parent);
+
 		if (!dma_up) {
 			dev_dbg(dev, "not a pci device behind a switch\n");
 			return false;
