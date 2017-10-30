@@ -16,6 +16,7 @@
 #include <linux/random.h>
 #include <linux/rculist.h>
 #include <linux/pci.h>
+#include <linux/blk-mq.h>
 
 #include "nvmet.h"
 
@@ -758,11 +759,24 @@ static void nvmet_setup_p2pmem(struct nvmet_ctrl *ctrl, struct nvmet_port *port)
 		return;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(ns, &ctrl->subsys->namespaces, dev_link)
+	list_for_each_entry_rcu(ns, &ctrl->subsys->namespaces, dev_link) {
+		if (!queue_supports_pci_p2p(ns->bdev->bd_queue)) {
+			pr_info("p2pmem not supported by %s\n",
+				ns->device_path);
+			goto free_devices;
+		}
 		devices[i++] = disk_to_dev(ns->bdev->bd_disk);
+	}
 	rcu_read_unlock();
 
 	ctrl->p2p_dev = pci_p2pmem_find(devices);
+
+	if (ctrl->p2p_dev)
+		pr_info("using p2pmem on %s\n", pci_name(ctrl->p2p_dev));
+	else
+		pr_info("no supported p2pmem devices found\n");
+
+free_devices:
 	kfree(devices);
 }
 
