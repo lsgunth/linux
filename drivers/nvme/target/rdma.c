@@ -278,7 +278,7 @@ static int nvmet_rdma_alloc_sgl_p2p(struct pci_dev *p2p_dev,
 out_free_elements:
 	while (i > 0) {
 		i--;
-		pci_free_p2pmem(p2p_dev, sg_virt(sg), sg->length);
+		pci_free_p2pmem(p2p_dev, sg_virt(&sg[i]), sg->length);
 	}
 	kfree(sg);
 out:
