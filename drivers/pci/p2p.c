@@ -169,12 +169,11 @@ static struct pci_dev *get_upstream_switch_port(struct pci_dev *pdev)
 	return up2;
 }
 
-static int upstream_bridges_match(struct pci_dev *pdev, struct device **devices)
+static int upstream_bridges_match(struct pci_dev *pdev, struct device **devs)
 {
 	struct pci_dev *p2p_up;
 	struct pci_dev *dma_up;
 	struct pci_dev *parent;
-	struct device *dev;
 	bool ret = true;
 
 	p2p_up = get_upstream_switch_port(pdev);
@@ -183,13 +182,13 @@ static int upstream_bridges_match(struct pci_dev *pdev, struct device **devices)
 		return false;
 	}
 
-	for (dev = *devices; dev; dev++) {
-		parent = find_parent_pci_dev(dev);
+	for ( ; *devs; devs++) {
+		parent = find_parent_pci_dev(*devs);
 		dma_up = get_upstream_switch_port(parent);
 		pci_dev_put(parent);
 
 		if (!dma_up) {
-			dev_dbg(dev, "not a pci device behind a switch\n");
+			dev_dbg(*devs, "not a pci device behind a switch\n");
 			pci_dev_put(dma_up);
 			ret = false;
 			goto out;
@@ -198,7 +197,7 @@ static int upstream_bridges_match(struct pci_dev *pdev, struct device **devices)
 		if (p2p_up != dma_up) {
 			dev_dbg(&pdev->dev,
 				"%s does not reside on the same upstream bridge\n",
-				dev_name(dev));
+				dev_name(*devs));
 			pci_dev_put(dma_up);
 			ret = false;
 			goto out;
