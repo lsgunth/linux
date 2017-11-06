@@ -752,7 +752,8 @@ static void nvmet_setup_p2pmem(struct nvmet_ctrl *ctrl, struct nvmet_port *port)
 	if (!port->allow_p2pmem)
 		return;
 
-	devices = kcalloc(ctrl->subsys->max_nsid, sizeof(*devices), GFP_KERNEL);
+	devices = kcalloc(ctrl->subsys->max_nsid + 1, sizeof(*devices),
+			  GFP_KERNEL);
 	if (!devices)
 		return;
 
