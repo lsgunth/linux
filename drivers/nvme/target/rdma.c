@@ -240,65 +240,6 @@ out:
 	return NVME_SC_INTERNAL;
 }
 
-
-static int nvmet_rdma_alloc_sgl_p2p(struct pci_dev *p2p_dev,
-		struct scatterlist **sgl, unsigned int *nents, u32 length)
-{
-	struct scatterlist *sg;
-	void *addr;
-	unsigned int nent;
-	int i = 0;
-
-	nent = DIV_ROUND_UP(length, PAGE_SIZE);
-	sg = kmalloc_array(nent, sizeof(struct scatterlist), GFP_KERNEL);
-	if (!sg)
-		goto out;
-
-	sg_init_table(sg, nent);
-
-	while (length) {
-		u32 page_len = min_t(u32, length, PAGE_SIZE);
-
-		/*
-		 * XXX: No good reason to just allocate page size chunks with
-		 * genalloc..
-		 */
-		addr = pci_alloc_p2pmem(p2p_dev, page_len);
-		if (!addr)
-			goto out_free_elements;
-
-		sg_set_buf(&sg[i], addr, page_len);
-		length -= page_len;
-		i++;
-	}
-	*sgl = sg;
-	*nents = nent;
-	return 0;
-
-out_free_elements:
-	while (i > 0) {
-		i--;
-		pci_free_p2pmem(p2p_dev, sg_virt(&sg[i]), sg->length);
-	}
-	kfree(sg);
-out:
-	return NVME_SC_INTERNAL;
-}
-
-static void nvmet_rdma_free_sgl_p2p(struct pci_dev *p2p_dev,
-		struct scatterlist *sgl, unsigned int nents)
-{
-	struct scatterlist *sg;
-	int count;
-
-	if (!sgl || !nents)
-		return;
-
-	for_each_sg(sgl, sg, nents, count)
-		pci_free_p2pmem(p2p_dev, sg_virt(sg), sg->length);
-	kfree(sgl);
-}
-
 static int nvmet_rdma_alloc_cmd(struct nvmet_rdma_device *ndev,
 			struct nvmet_rdma_cmd *c, bool admin)
 {
@@ -546,8 +487,8 @@ static void nvmet_rdma_release_rsp(struct nvmet_rdma_rsp *rsp)
 
 	if (rsp->req.sg != &rsp->cmd->inline_sg) {
 		if (rsp->p2p_dev) {
-			nvmet_rdma_free_sgl_p2p(rsp->p2p_dev,
-					rsp->req.sg, rsp->req.sg_cnt);
+			pci_p2pmem_free_sgl(rsp->p2p_dev, rsp->req.sg,
+					    rsp->req.sg_cnt);
 		} else {
 			nvmet_rdma_free_sgl(rsp->req.sg, rsp->req.sg_cnt);
 		}
@@ -699,8 +640,8 @@ static u16 nvmet_rdma_map_sgl_keyed(struct nvmet_rdma_rsp *rsp,
 
 	rsp->p2p_dev = NULL;
 	if (rsp->queue->nvme_sq.qid && p2p_dev) {
-		status = nvmet_rdma_alloc_sgl_p2p(p2p_dev, &rsp->req.sg,
-				&rsp->req.sg_cnt, len);
+		status = pci_p2pmem_alloc_sgl(p2p_dev, &rsp->req.sg,
+					      &rsp->req.sg_cnt, len);
 		if (!status)
 			rsp->p2p_dev = p2p_dev;
 	}
