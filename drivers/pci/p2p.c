@@ -263,3 +263,60 @@ void pci_free_p2pmem(struct pci_dev *pdev, void *addr, size_t size)
 	gen_pool_free(pdev->p2p_pool, (uintptr_t)addr, size);
 }
 EXPORT_SYMBOL_GPL(pci_free_p2pmem);
+
+/**
+ * pci_p2pmem_alloc_sgl - allocate p2p memory in an sgl
+ * @pdev:	the device to allocate memory from
+ * @sgl:	the allocated sgl
+ * @nents:      the number of sgs in the list
+ * @length:     number of bytes to allocate
+ *
+ * Returns 0 on success
+ */
+int pci_p2pmem_alloc_sgl(struct pci_dev *pdev, struct scatterlist **sgl,
+			 unsigned int *nents, u32 length)
+{
+	struct scatterlist *sg;
+	void *addr;
+
+	sg = kzalloc(sizeof(*sg), GFP_KERNEL);
+	if (!sg)
+		return -ENOMEM;
+
+	sg_init_table(sg, 1);
+
+	addr = pci_alloc_p2pmem(pdev, length);
+	if (!addr)
+		goto out_free_sg;
+
+	sg_set_buf(sg, addr, length);
+	*sgl = sg;
+	*nents = 1;
+	return 0;
+
+out_free_sg:
+	kfree(sg);
+	return -ENOMEM;
+}
+EXPORT_SYMBOL_GPL(pci_p2pmem_alloc_sgl);
+
+/**
+ * pci_p2pmem_free_sgl - free an sgl allocated by pci_p2pmem_alloc_sgl
+ * @pdev:	the device to allocate memory from
+ * @sgl:	the allocated sgl
+ * @nents:      the number of sgs in the list
+ */
+void pci_p2pmem_free_sgl(struct pci_dev *pdev, struct scatterlist *sgl,
+			 unsigned int nents)
+{
+	struct scatterlist *sg;
+	int count;
+
+	if (!sgl || !nents)
+		return;
+
+	for_each_sg(sgl, sg, nents, count)
+		pci_free_p2pmem(pdev, sg_virt(sg), sg->length);
+	kfree(sgl);
+}
+EXPORT_SYMBOL_GPL(pci_p2pmem_free_sgl);

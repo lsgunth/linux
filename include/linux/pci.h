@@ -2006,6 +2006,10 @@ int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset);
 struct pci_dev *pci_p2pmem_find(struct device **devices);
 void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size);
 void pci_free_p2pmem(struct pci_dev *pdev, void *addr, size_t size);
+int pci_p2pmem_alloc_sgl(struct pci_dev *pdev, struct scatterlist **sgl,
+			 unsigned int *nents, u32 length);
+void pci_p2pmem_free_sgl(struct pci_dev *pdev, struct scatterlist *sgl,
+			 unsigned int nents);
 #else
 static inline int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar,
 	u64 offset)
@@ -2022,6 +2026,17 @@ static inline void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size)
 }
 static inline void pci_free_p2pmem(struct pci_dev *pdev, void *addr,
 		size_t size)
+{
+}
+static inline int pci_p2pmem_alloc_sgl(struct pci_dev *pdev,
+				       struct scatterlist **sgl,
+				       unsigned int *nents, u32 length)
+{
+	return -ENOSYS;
+}
+static inline void pci_p2pmem_free_sgl(struct pci_dev *pdev,
+				       struct scatterlist *sgl,
+				       unsigned int nents)
 {
 }
 #endif /* CONFIG_PCI_P2P */
