@@ -686,13 +686,16 @@ static u16 nvmet_rdma_map_sgl_keyed(struct nvmet_rdma_rsp *rsp,
 	u64 addr = le64_to_cpu(sgl->addr);
 	u32 len = get_unaligned_le24(sgl->length);
 	u32 key = get_unaligned_le32(sgl->key);
-	struct pci_dev *p2p_dev = rsp->queue->nvme_sq.ctrl->p2p_dev;
+	struct pci_dev *p2p_dev = NULL;
 	int ret;
 	u16 status;
 
 	/* no data command? */
 	if (!len)
 		return 0;
+
+	if (rsp->queue->nvme_sq.ctrl)
+		p2p_dev = rsp->queue->nvme_sq.ctrl->p2p_dev;
 
 	rsp->p2p_dev = NULL;
 	if (rsp->queue->nvme_sq.qid && p2p_dev) {
