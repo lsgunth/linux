@@ -701,7 +701,7 @@ static u16 nvmet_rdma_map_sgl_keyed(struct nvmet_rdma_rsp *rsp,
 	if (rsp->queue->nvme_sq.qid && p2p_dev) {
 		status = nvmet_rdma_alloc_sgl_p2p(p2p_dev, &rsp->req.sg,
 				&rsp->req.sg_cnt, len);
-		if (status)
+		if (!status)
 			rsp->p2p_dev = p2p_dev;
 	}
 
