@@ -2002,7 +2002,8 @@ static inline resource_size_t pci_iov_resource_size(struct pci_dev *dev, int res
 #endif
 
 #ifdef CONFIG_PCI_P2P
-int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset);
+int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, size_t size,
+			    u64 offset);
 struct pci_dev *pci_p2pmem_find(struct device **devices);
 void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size);
 void pci_free_p2pmem(struct pci_dev *pdev, void *addr, size_t size);
@@ -2012,7 +2013,7 @@ void pci_p2pmem_free_sgl(struct pci_dev *pdev, struct scatterlist *sgl,
 			 unsigned int nents);
 #else
 static inline int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar,
-	u64 offset)
+	size_t size, u64 offset)
 {
 	return 0;
 }

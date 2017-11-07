@@ -83,18 +83,26 @@ out:
  * pci_p2pmem_add_resource - add memory for use as p2p memory
  * @pci: the device to add the memory to
  * @bar: PCI bar to add
+ * @size: size of the memory to add, may be zero to use the whole bar
  * @offset: offset into the PCI bar
  *
  * The memory will be given ZONE_DEVICE struct pages so that it may
  * be used with any dma request.
  */
-int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset)
+int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, size_t size,
+			    u64 offset)
 {
 	struct dev_pagemap *pgmap;
 	void *addr;
 	int error;
 
 	if (WARN_ON(offset >= pci_resource_len(pdev, bar)))
+		return -EINVAL;
+
+	if (!size)
+		size = pci_resource_len(pdev, bar) - offset;
+
+	if (WARN_ON(size + offset > pci_resource_len(pdev, bar)))
 		return -EINVAL;
 
 	if (!pdev->p2p_pool) {
@@ -108,7 +116,7 @@ int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, u64 offset)
 		return -ENOMEM;
 
 	pgmap->res.start = pci_resource_start(pdev, bar) + offset;
-	pgmap->res.end = pci_resource_end(pdev, bar);
+	pgmap->res.end = pgmap->res.start + size;
 	pgmap->ref = &pdev->p2p_devmap_ref;
 	pgmap->type = MEMORY_DEVICE_PCI_P2P;
 
