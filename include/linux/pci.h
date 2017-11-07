@@ -442,6 +442,7 @@ struct pci_dev {
 	struct percpu_ref p2p_devmap_ref;
 	struct completion p2p_devmap_ref_done;
 	struct gen_pool *p2p_pool;
+	bool p2p_published;
 #endif
 	phys_addr_t rom; /* Physical address of ROM if it's not from the BAR */
 	size_t romlen; /* Length of ROM if it's not from the BAR */
@@ -2012,6 +2013,7 @@ int pci_p2pmem_alloc_sgl(struct pci_dev *pdev, struct scatterlist **sgl,
 			 unsigned int *nents, u32 length);
 void pci_p2pmem_free_sgl(struct pci_dev *pdev, struct scatterlist *sgl,
 			 unsigned int nents);
+void pci_p2pmem_publish(struct pci_dev *pdev, bool publish);
 #else
 static inline int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar,
 	size_t size, u64 offset)
@@ -2044,6 +2046,9 @@ static inline int pci_p2pmem_alloc_sgl(struct pci_dev *pdev,
 static inline void pci_p2pmem_free_sgl(struct pci_dev *pdev,
 				       struct scatterlist *sgl,
 				       unsigned int nents)
+{
+}
+static inline void pci_p2pmem_publish(struct pci_dev *pdev, bool publish)
 {
 }
 #endif /* CONFIG_PCI_P2P */

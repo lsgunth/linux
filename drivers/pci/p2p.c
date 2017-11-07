@@ -235,7 +235,7 @@ struct pci_dev *pci_p2pmem_find(struct device **devices)
 	struct pci_dev *pdev = NULL;
 
 	while ((pdev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, pdev))) {
-		if (!pdev->p2p_pool)
+		if (!pdev->p2p_published)
 			continue;
 
 		if (upstream_bridges_match(pdev, devices))
@@ -342,3 +342,18 @@ void pci_p2pmem_free_sgl(struct pci_dev *pdev, struct scatterlist *sgl,
 	kfree(sgl);
 }
 EXPORT_SYMBOL_GPL(pci_p2pmem_free_sgl);
+
+/**
+ * pci_p2pmem_publish - publsih the p2p memory for use by other devices
+ *	with pci_p2pmem_find
+ * @pdev:	the device with p2p memory to publish
+ * @publish:	set to true to publish the memory, false to unpublish it
+ */
+void pci_p2pmem_publish(struct pci_dev *pdev, bool publish)
+{
+	if (WARN_ON(publish && !pdev->p2p_pool))
+		return;
+
+	pdev->p2p_published = publish;
+}
+EXPORT_SYMBOL_GPL(pci_p2pmem_publish);
