@@ -272,6 +272,21 @@ void pci_free_p2pmem(struct pci_dev *pdev, void *addr, size_t size)
 EXPORT_SYMBOL_GPL(pci_free_p2pmem);
 
 /**
+ * pci_virt_to_bus - return the pci bus address for a given virtual
+ *	address obtained with pci_alloc_p2pmem
+ * @pdev:	the device the memory was allocated from
+ * @addr:	address of the memory that was allocated
+ */
+pci_bus_addr_t pci_p2pmem_virt_to_bus(struct pci_dev *pdev, void *addr)
+{
+	if (!addr)
+		return 0;
+
+	return gen_pool_virt_to_phys(pdev->p2p_pool, (unsigned long)addr);
+}
+EXPORT_SYMBOL_GPL(pci_p2pmem_virt_to_bus);
+
+/**
  * pci_p2pmem_alloc_sgl - allocate p2p memory in an sgl
  * @pdev:	the device to allocate memory from
  * @sgl:	the allocated sgl

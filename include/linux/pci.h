@@ -2007,6 +2007,7 @@ int pci_p2pmem_add_resource(struct pci_dev *pdev, int bar, size_t size,
 struct pci_dev *pci_p2pmem_find(struct device **devices);
 void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size);
 void pci_free_p2pmem(struct pci_dev *pdev, void *addr, size_t size);
+pci_bus_addr_t pci_p2pmem_virt_to_bus(struct pci_dev *pdev, void *addr);
 int pci_p2pmem_alloc_sgl(struct pci_dev *pdev, struct scatterlist **sgl,
 			 unsigned int *nents, u32 length);
 void pci_p2pmem_free_sgl(struct pci_dev *pdev, struct scatterlist *sgl,
@@ -2028,6 +2029,11 @@ static inline void *pci_alloc_p2pmem(struct pci_dev *pdev, size_t size)
 static inline void pci_free_p2pmem(struct pci_dev *pdev, void *addr,
 		size_t size)
 {
+}
+static inline pci_bus_addr_t pci_p2pmem_virt_to_bus(struct pci_dev *pdev,
+						    void *addr)
+{
+	return 0;
 }
 static inline int pci_p2pmem_alloc_sgl(struct pci_dev *pdev,
 				       struct scatterlist **sgl,
