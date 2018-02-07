@@ -95,13 +95,61 @@ free_st:
 	return NULL;
 }
 
+static int nvmet_rdma_alloc_st_pages(struct device *dev,
+				     struct nvmet_rdma_staging_buf *st)
+{
+	int i;
+	int ret;
+
+	if (!st->dynamic)
+		return 0;
+
+	for (i = 0 ; i < st->num_pages ; i++) {
+		st->staging_pages[i] = dma_zalloc_coherent(dev,
+						st->page_size,
+						&st->staging_dma_addrs[i],
+						GFP_KERNEL);
+		if (!st->staging_pages[i]) {
+			ret = -ENOMEM;
+			goto release_st_buf;
+		}
+	}
+
+	return 0;
+
+release_st_buf:
+	while (i > 0) {
+		i--;
+		dma_free_coherent(dev, st->page_size,
+				  st->staging_pages[i],
+				  st->staging_dma_addrs[i]);
+	}
+
+	return ret;
+}
+
+
+static void nvmet_rdma_free_st_pages(struct device *dev,
+				     struct nvmet_rdma_staging_buf *st)
+{
+	int i;
+
+	if (!st->dynamic)
+		return;
+
+	for (i = 0 ; i < st->num_pages ; i++) {
+		dma_free_coherent(dev, st->page_size,
+				  st->staging_pages[i],
+				  st->staging_dma_addrs[i]);
+	}
+}
+
 static void nvmet_rdma_destroy_xrq(struct kref *ref)
 {
 	struct nvmet_rdma_xrq *xrq =
 		container_of(ref, struct nvmet_rdma_xrq, ref);
 	struct nvmet_rdma_device *ndev = xrq->ndev;
 	struct nvmet_rdma_staging_buf *st = xrq->st;
-	int i;
 
 	pr_info("destroying XRQ %p port %p\n", xrq, xrq->port);
 
@@ -113,11 +161,7 @@ static void nvmet_rdma_destroy_xrq(struct kref *ref)
 	/* TODO: check if need to reduce refcound on pdev */
 	nvmet_rdma_free_cmds(ndev, xrq->ofl_srq_cmds, xrq->ofl_srq_size, false);
 	ib_destroy_srq(xrq->ofl_srq);
-	if (st->dynamic) {
-		for (i = 0 ; i < st->num_pages ; i++)
-			dma_free_coherent(ndev->device->dma_device, st->page_size,
-					  st->staging_pages[i], st->staging_dma_addrs[i]);
-	}
+	nvmet_rdma_free_st_pages(ndev->device->dma_device, st);
 
 	ib_free_cq(xrq->cq);
 	nvmet_rdma_release_st_buff(st);
@@ -131,7 +175,7 @@ static int nvmet_rdma_init_xrq(struct nvmet_rdma_device *ndev,
 	struct ib_srq_init_attr srq_attr = { NULL, };
 	struct ib_srq *srq;
 	size_t srq_size;
-	int ret, i, j;
+	int ret, i;
 	struct nvmet_rdma_xrq *xrq;
 	struct nvmet_port *port = queue->port;
 
@@ -187,17 +231,11 @@ static int nvmet_rdma_init_xrq(struct nvmet_rdma_device *ndev,
 		goto free_xrq_cq;
 	}
 
+	ret = nvmet_rdma_alloc_st_pages(ndev->device->dma_device, xrq->st);
+	if (ret)
+		goto release_st_buf;
+
 	for (i = 0 ; i < xrq->st->num_pages ; i++) {
-		if (xrq->st->dynamic) {
-			xrq->st->staging_pages[i] = dma_zalloc_coherent(ndev->device->dma_device,
-									xrq->st->page_size,
-									&xrq->st->staging_dma_addrs[i],
-									GFP_KERNEL);
-			if (!xrq->st->staging_pages[i]) {
-				ret = -ENOMEM;
-				goto release_st_buf;
-			}
-		}
 		memcpy(&srq_attr.ext.nvmf.staging_buffer_pas[i],
 		       &xrq->st->staging_dma_addrs[i], sizeof(dma_addr_t));
 	}
@@ -241,11 +279,6 @@ out_free_cmds:
 out_destroy_srq:
 	ib_destroy_srq(srq);
 release_st_buf:
-	if (xrq->st->dynamic) {
-		for (j = 0 ; j < i ; j++)
-			dma_free_coherent(ndev->device->dma_device, xrq->st->page_size,
-					  xrq->st->staging_pages[j], xrq->st->staging_dma_addrs[j]);
-	}
 	kfree(srq_attr.ext.nvmf.staging_buffer_pas);
 free_xrq_cq:
 	ib_free_cq(xrq->cq);
@@ -675,4 +708,3 @@ error:
 out:
 	return err;
 }
-
