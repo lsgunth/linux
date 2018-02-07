@@ -58,6 +58,7 @@ struct nvmet_rdma_staging_buf {
 	struct list_head	  entry;
 	bool 			  dynamic;
 	struct nvmet_rdma_xrq	  *xrq;
+	struct pci_dev		  *p2p_dev;
 };
 
 struct nvmet_rdma_xrq {
@@ -75,6 +76,7 @@ struct nvmet_rdma_xrq {
 	struct nvmet_rdma_staging_buf	*st;
 	struct kref			ref;
 	struct list_head		entry;
+	struct list_head		p2p_clients;
 };
 
 static void nvmet_rdma_free_st_buff(struct nvmet_rdma_staging_buf *st);

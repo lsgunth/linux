@@ -95,6 +95,43 @@ free_st:
 	return NULL;
 }
 
+static int nvmet_rdma_alloc_st_pages_p2pdma(struct device *dev,
+					    struct nvmet_rdma_staging_buf *st)
+{
+	int i;
+	int ret;
+
+	if (!st->p2p_dev)
+		return -ENODEV;
+
+	for (i = 0 ; i < st->num_pages ; i++) {
+		st->staging_pages[i] = pci_alloc_p2pmem(st->p2p_dev,
+							st->page_size);
+		if (!st->staging_pages[i]) {
+			ret = -ENOMEM;
+			goto release_st_buf;
+		}
+
+		st->staging_dma_addrs[i] = pci_p2pmem_virt_to_bus(st->p2p_dev,
+				st->staging_pages[i]);
+	}
+
+	return 0;
+
+release_st_buf:
+	while (i > 0) {
+		i--;
+		pci_free_p2pmem(st->p2p_dev, st->staging_pages[i],
+				st->page_size);
+	}
+
+	pci_dev_put(st->p2p_dev);
+	st->p2p_dev = NULL;
+
+	return ret;
+}
+
+
 static int nvmet_rdma_alloc_st_pages(struct device *dev,
 				     struct nvmet_rdma_staging_buf *st)
 {
@@ -103,6 +140,10 @@ static int nvmet_rdma_alloc_st_pages(struct device *dev,
 
 	if (!st->dynamic)
 		return 0;
+
+	ret = nvmet_rdma_alloc_st_pages_p2pdma(dev, st);
+	if (!ret)
+		return ret;
 
 	for (i = 0 ; i < st->num_pages ; i++) {
 		st->staging_pages[i] = dma_zalloc_coherent(dev,
@@ -138,10 +179,17 @@ static void nvmet_rdma_free_st_pages(struct device *dev,
 		return;
 
 	for (i = 0 ; i < st->num_pages ; i++) {
-		dma_free_coherent(dev, st->page_size,
-				  st->staging_pages[i],
-				  st->staging_dma_addrs[i]);
+		if (st->p2p_dev)
+			pci_free_p2pmem(st->p2p_dev, st->staging_pages[i],
+					st->page_size);
+		else
+			dma_free_coherent(dev, st->page_size,
+					  st->staging_pages[i],
+					  st->staging_dma_addrs[i]);
 	}
+
+	pci_dev_put(st->p2p_dev);
+	st->p2p_dev = NULL;
 }
 
 static void nvmet_rdma_destroy_xrq(struct kref *ref)
@@ -165,6 +213,7 @@ static void nvmet_rdma_destroy_xrq(struct kref *ref)
 
 	ib_free_cq(xrq->cq);
 	nvmet_rdma_release_st_buff(st);
+	pci_p2pdma_client_list_free(&xrq->p2p_clients);
 	kfree(xrq);
 	kref_put(&ndev->ref, nvmet_rdma_free_dev);
 }
@@ -188,6 +237,7 @@ static int nvmet_rdma_init_xrq(struct nvmet_rdma_device *ndev,
 	INIT_LIST_HEAD(&xrq->offload_ctrls_list);
 	mutex_init(&xrq->offload_ctrl_mutex);
 	INIT_LIST_HEAD(&xrq->be_ctrls_list);
+	INIT_LIST_HEAD(&xrq->p2p_clients);
 	mutex_init(&xrq->be_mutex);
 	xrq->ndev = ndev;
 	xrq->port = port;
@@ -231,9 +281,33 @@ static int nvmet_rdma_init_xrq(struct nvmet_rdma_device *ndev,
 		goto free_xrq_cq;
 	}
 
+	if (queue->port->allow_p2pmem) {
+		/*
+		 * TODO: this is bad and needs to change.
+		 *  We should be using the p2p_dev infrastructure used by
+		 *  the core nvme target code. Or at the very least be
+		 *  registering all clients that are involved in the p2p
+		 *  transaction. However, we can't do it at this time because
+		 *  the controller is not yet created.
+		 */
+		pci_p2pdma_add_client(&xrq->p2p_clients,
+				      ndev->device->dma_device);
+		xrq->st->p2p_dev = pci_p2pmem_find(&xrq->p2p_clients);
+		if (!xrq->st->p2p_dev)
+			pr_info("no supported peer-to-peer memory devices found\n");
+	}
+
+	if (xrq->st->p2p_dev)
+		pr_debug("attempting to use peer-to-peer memory on %s\n",
+			 pci_name(xrq->st->p2p_dev));
+
 	ret = nvmet_rdma_alloc_st_pages(ndev->device->dma_device, xrq->st);
 	if (ret)
 		goto release_st_buf;
+
+	if (xrq->st->p2p_dev)
+		pr_info("using peer-to-peer memory on %s\n",
+			pci_name(xrq->st->p2p_dev));
 
 	for (i = 0 ; i < xrq->st->num_pages ; i++) {
 		memcpy(&srq_attr.ext.nvmf.staging_buffer_pas[i],
@@ -285,6 +359,7 @@ free_xrq_cq:
 free_xrq_st:
 	nvmet_rdma_release_st_buff(xrq->st);
 free_xrq:
+	pci_p2pdma_client_list_free(&xrq->p2p_clients);
 	kfree(xrq);
 
 	return ret;
