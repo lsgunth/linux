@@ -7,6 +7,7 @@
 
 #include "dmaengine.h"
 
+#include <linux/circ_buf.h>
 #include <linux/dmaengine.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/kref.h>
@@ -97,6 +98,7 @@ struct plx_dma_hw_std_desc {
 	__le32 src_addr_lo;
 };
 
+#define PLX_DESC_SIZE_MASK		0x7ffffff
 #define PLX_DESC_FLAG_VALID		BIT(31)
 #define PLX_DESC_FLAG_INT_WHEN_DONE	BIT(30)
 
@@ -113,6 +115,9 @@ struct plx_dma_dev {
 
 	struct kref ref;
 
+	spinlock_t ring_lock;
+	int head;
+	int tail;
 	struct plx_dma_hw_std_desc *hw_ring;
 	struct dma_async_tx_descriptor **desc_ring;
 };
@@ -120,6 +125,83 @@ struct plx_dma_dev {
 static struct plx_dma_dev *chan_to_plx_dma_dev(struct dma_chan *c)
 {
 	return container_of(c, struct plx_dma_dev, dma_chan);
+}
+
+static struct dma_async_tx_descriptor *plx_dma_prep_memcpy(struct dma_chan *c,
+		dma_addr_t dma_dst, dma_addr_t dma_src, size_t len,
+		unsigned long flags)
+{
+	struct plx_dma_dev *plxdev = chan_to_plx_dma_dev(c);
+	struct dma_async_tx_descriptor *desc;
+	struct plx_dma_hw_std_desc *hw;
+	int idx;
+
+	if (len > PLX_DESC_SIZE_MASK)
+		return NULL;
+
+	spin_lock_bh(&plxdev->ring_lock);
+	if (!CIRC_SPACE(plxdev->head, plxdev->tail, PLX_DMA_RING_COUNT))
+		goto err_unlock;
+
+	idx = plxdev->head & (PLX_DMA_RING_COUNT - 1);
+	hw = &plxdev->hw_ring[idx];
+	desc = plxdev->desc_ring[idx];
+	plxdev->head++;
+
+	hw->dst_addr_lo = cpu_to_le32(lower_32_bits(dma_dst));
+	hw->dst_addr_hi = cpu_to_le16(upper_32_bits(dma_dst));
+	hw->src_addr_lo = cpu_to_le32(lower_32_bits(dma_src));
+	hw->src_addr_hi = cpu_to_le16(upper_32_bits(dma_src));
+
+	hw->flags_and_size = len;
+
+	desc->flags = flags;
+
+	if (flags & DMA_PREP_INTERRUPT)
+		hw->flags_and_size |= PLX_DESC_FLAG_INT_WHEN_DONE;
+
+	/* return with the lock held, it will be released in tx_submit */
+
+	return desc;
+
+err_unlock:
+	spin_unlock_bh(&plxdev->ring_lock);
+	return NULL;
+}
+
+static dma_cookie_t plx_dma_tx_submit(struct dma_async_tx_descriptor *desc)
+{
+	struct plx_dma_dev *plxdev = chan_to_plx_dma_dev(desc->chan);
+	struct plx_dma_hw_std_desc *hw;
+	dma_cookie_t cookie;
+	int idx;
+
+	cookie = dma_cookie_assign(desc);
+
+	idx = desc - plxdev->desc_ring;
+	hw = &plxdev->hw_ring[idx];
+
+	/*
+	 * Ensure the descriptor updates are visible to the dma device
+	 * before setting the valid bit.
+	 */
+	wmb();
+
+	hw->flags_and_size |= PLX_DESC_FLAG_VALID;
+
+	/*
+	 * Ensure the valid bit is visible before starting the
+	 * DMA engine. Both these barriers are necessary seeing
+	 * the start is only necessary if the dma engine isn't already
+	 * running.
+	 */
+	wmb();
+
+	writew(PLX_REG_CTRL_START_VAL, plxdev->bar + PLX_REG_CTRL);
+
+	spin_unlock_bh(&plxdev->ring_lock);
+
+	return cookie;
 }
 
 static irqreturn_t plx_dma_isr(int irq, void *devid)
@@ -166,6 +248,7 @@ static int plx_dma_alloc_desc(struct plx_dma_dev *plxdev)
 			goto free_and_exit;
 
 		dma_async_tx_descriptor_init(desc, &plxdev->dma_chan);
+		desc->tx_submit = plx_dma_tx_submit;
 		plxdev->desc_ring[i] = desc;
 	}
 
@@ -285,6 +368,7 @@ static int plx_dma_create(struct pci_dev *pdev)
 	}
 
 	kref_init(&plxdev->ref);
+	spin_lock_init(&plxdev->ring_lock);
 
 	plxdev->bar = pcim_iomap_table(pdev)[0];
 
@@ -297,6 +381,7 @@ static int plx_dma_create(struct pci_dev *pdev)
 
 	dma->device_alloc_chan_resources = plx_dma_alloc_chan_resources;
 	dma->device_free_chan_resources = plx_dma_free_chan_resources;
+	dma->device_prep_dma_memcpy = plx_dma_prep_memcpy;
 
 	chan = &plxdev->dma_chan;
 	chan->device = dma;
