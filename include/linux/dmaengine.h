@@ -358,6 +358,9 @@ struct dma_chan {
 	struct dma_router *router;
 	void *route_data;
 
+	bool kobj_used;
+	struct kobject kobj;
+
 	void *private;
 };
 

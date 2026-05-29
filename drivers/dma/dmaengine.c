@@ -125,6 +125,63 @@ static int dmaengine_summary_show(struct seq_file *s, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(dmaengine_summary);
 
+static ssize_t
+dma_chan_attr_show(struct kobject *kobj, struct attribute *attr, char *page)
+{
+	const struct dma_chan_sysfs_entry *entry;
+	struct dma_chan *dma_chan;
+
+	entry = container_of_const(attr, struct dma_chan_sysfs_entry, attr);
+	dma_chan = container_of(kobj, struct dma_chan, kobj);
+
+	if (!entry->show)
+		return -EIO;
+
+	return entry->show(dma_chan, page);
+}
+
+static ssize_t
+dma_chan_attr_store(struct kobject *kobj, struct attribute *attr,
+		    const char *page, size_t count)
+{
+	const struct dma_chan_sysfs_entry *entry;
+	struct dma_chan *dma_chan;
+
+	entry = container_of_const(attr, struct dma_chan_sysfs_entry, attr);
+	dma_chan = container_of(kobj, struct dma_chan, kobj);
+
+	if (!entry->store)
+		return -EIO;
+
+	return entry->store(dma_chan, page, count);
+}
+
+const struct sysfs_ops dma_chan_sysfs_ops = {
+	.show = dma_chan_attr_show,
+	.store = dma_chan_attr_store,
+};
+EXPORT_SYMBOL_GPL(dma_chan_sysfs_ops);
+
+void dma_chan_kobject_add(struct dma_device *dev, const struct kobj_type *type,
+			  const char *name)
+{
+	struct dma_chan *chan;
+	int err;
+
+	list_for_each_entry(chan, &dev->channels, device_node) {
+		chan->kobj_used = true;
+		err = kobject_init_and_add(&chan->kobj, type,
+					   &chan->dev->device.kobj, name);
+		if (err) {
+			dev_warn(dev->dev,
+				 "sysis init error(%d), continuinng...\n", err);
+			kobject_put(&chan->kobj);
+			chan->kobj_used = false;
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(dma_chan_kobject_add);
+
 static void __init dmaengine_debugfs_init(void)
 {
 	rootdir = debugfs_create_dir("dmaengine", NULL);
@@ -1142,6 +1199,11 @@ static void __dma_async_device_channel_unregister(struct dma_device *device,
 {
 	if (chan->local == NULL)
 		return;
+
+	if (chan->kobj_used) {
+		kobject_del(&chan->kobj);
+		kobject_put(&chan->kobj);
+	}
 
 	WARN_ONCE(!device->device_release && chan->client_count,
 		  "%s called while %d clients hold a reference\n",
