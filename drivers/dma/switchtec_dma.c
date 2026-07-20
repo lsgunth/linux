@@ -1047,6 +1047,10 @@ err_ring_inactive:
 	swdma_chan->comp_ring_active = false;
 	spin_unlock_bh(&swdma_chan->complete_lock);
 err_disable_channel:
+	if (switchtec_dma_chan_stop(swdma_chan)) {
+		disable_channel(swdma_chan);
+		return rc;
+	}
 	disable_channel(swdma_chan);
 err_free_desc:
 	switchtec_dma_free_desc(swdma_chan);
