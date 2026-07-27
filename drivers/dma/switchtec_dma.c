@@ -543,19 +543,24 @@ switchtec_dma_abort_desc(struct switchtec_dma_chan *swdma_chan, int force)
 	spin_unlock_bh(&swdma_chan->complete_lock);
 }
 
-static void switchtec_dma_chan_stop(struct switchtec_dma_chan *swdma_chan)
+static int switchtec_dma_chan_stop(struct switchtec_dma_chan *swdma_chan)
 {
+	struct pci_dev *pdev;
 	int rc;
 
 	rc = halt_channel(swdma_chan);
-	if (rc)
-		return;
 
 	rcu_read_lock();
-	if (!rcu_dereference(swdma_chan->swdma_dev->pdev)) {
+	pdev = rcu_dereference(swdma_chan->swdma_dev->pdev);
+	if (!pdev) {
 		rcu_read_unlock();
-		return;
+		return rc;
 	}
+
+	if (rc)
+		pci_err(pdev,
+			"Channel %d halt timed out, clearing DMA base registers anyway\n",
+			swdma_chan->index);
 
 	writel(0, &swdma_chan->mmio_chan_fw->sq_base_lo);
 	writel(0, &swdma_chan->mmio_chan_fw->sq_base_hi);
@@ -563,6 +568,8 @@ static void switchtec_dma_chan_stop(struct switchtec_dma_chan *swdma_chan)
 	writel(0, &swdma_chan->mmio_chan_fw->cq_base_hi);
 
 	rcu_read_unlock();
+
+	return rc;
 }
 
 static int switchtec_dma_terminate_all(struct dma_chan *chan)
@@ -1050,6 +1057,7 @@ static void switchtec_dma_free_chan_resources(struct dma_chan *chan)
 {
 	struct switchtec_dma_chan *swdma_chan =
 		container_of(chan, struct switchtec_dma_chan, dma_chan);
+	int rc;
 
 	spin_lock_bh(&swdma_chan->submit_lock);
 	swdma_chan->ring_active = false;
@@ -1059,9 +1067,10 @@ static void switchtec_dma_free_chan_resources(struct dma_chan *chan)
 	swdma_chan->comp_ring_active = false;
 	spin_unlock_bh(&swdma_chan->complete_lock);
 
-	switchtec_dma_chan_stop(swdma_chan);
+	rc = switchtec_dma_chan_stop(swdma_chan);
 	switchtec_dma_abort_desc(swdma_chan, 0);
-	switchtec_dma_free_desc(swdma_chan);
+	if (!rc)
+		switchtec_dma_free_desc(swdma_chan);
 
 	disable_channel(swdma_chan);
 }
